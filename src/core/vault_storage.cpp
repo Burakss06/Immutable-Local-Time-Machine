@@ -158,10 +158,18 @@ bool VaultStorage::WriteIndexToStream(std::ofstream& out) {
     }
 
     // 2. Dosya geçmişi haritasını yaz (Kaç dosya var?)
-    uint64_t fileCount = m_index.m_fileMap.size();
+    // Radix Tree üzerinde kaç dosya olduğunu saymak için bir ön dolaşma yapıyoruz
+    uint64_t fileCount = 0;
+    m_index.m_fileMap.Traverse([&fileCount](const std::wstring&, const std::vector<FileVersion>&) {
+        fileCount++;
+    });
+    
     out.write(reinterpret_cast<const char*>(&fileCount), sizeof(fileCount));
 
-    for (const auto& [path, versions] : m_index.m_fileMap) {
+    bool writeSuccess = true;
+    m_index.m_fileMap.Traverse([&out, &writeSuccess](const std::wstring& path, const std::vector<FileVersion>& versions) {
+        if (!writeSuccess) return;
+
         // Dosya yolunun uzunluğunu yaz (karakter sayısı)
         uint32_t pathLen = static_cast<uint32_t>(path.size());
         out.write(reinterpret_cast<const char*>(&pathLen), sizeof(pathLen));
@@ -183,8 +191,13 @@ bool VaultStorage::WriteIndexToStream(std::ofstream& out) {
                 out.write(reinterpret_cast<const char*>(h.data()), 32);
             }
         }
-    }
-    return out.good();
+        
+        if (out.fail()) {
+            writeSuccess = false;
+        }
+    });
+
+    return writeSuccess && out.good();
 }
 
 bool VaultStorage::ReadIndexFromStream(std::ifstream& in) {

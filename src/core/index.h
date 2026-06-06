@@ -5,6 +5,7 @@
 #include <cstring>
 #include <array>
 #include "crypto.h"
+#include "radix_tree.h"
 
 // Sha256Hash (std::array<uint8_t, 32>) yapısını unordered_map içinde anahtar (Key) olarak 
 // kullanabilmek için özel bir hash fonksiyonu (Hasher) tanımlamalıyız.
@@ -15,12 +16,6 @@ struct Sha256HashHasher {
         std::memcpy(&result, hash.data(), sizeof(size_t));
         return result;
     }
-};
-
-// Dosyanın belirli bir zamandaki sürüm (versiyon) bilgisi
-struct FileVersion {
-    uint64_t timestamp;                  // Değişiklik zaman damgası (Epoch milisaniye)
-    std::vector<Sha256Hash> blockHashes; // Dosyayı oluşturan blokların parmak izleri
 };
 
 // Kasadaki blokların ve dosyaların RAM üzerindeki indeks motoru
@@ -42,20 +37,18 @@ public:
 
     // Bir dosya sürümünü indekse ekler
     void AddFileVersion(const std::wstring& filePath, const FileVersion& version) {
-        m_fileMap[filePath].push_back(version);
+        m_fileMap.Insert(filePath, version);
     }
 
     // Bir dosyanın sürüm geçmişini döner
     const std::vector<FileVersion>* GetFileHistory(const std::wstring& filePath) const {
-        auto it = m_fileMap.find(filePath);
-        if (it == m_fileMap.end()) return nullptr;
-        return &it->second;
+        return m_fileMap.Lookup(filePath);
     }
 
 private:
     // Hash -> Kasa dosyasındaki offset (Tekil bloklar için)
     std::unordered_map<Sha256Hash, uint64_t, Sha256HashHasher> m_chunkMap;
 
-    // Dosya Yolu -> Sürüm Geçmişi (Dosya takipleri için)
-    std::unordered_map<std::wstring, std::vector<FileVersion>> m_fileMap;
+    // Dosya Yolu -> Sürüm Geçmişi (Dinamik önek sıkıştırmalı Radix Tree)
+    RadixTree m_fileMap;
 };

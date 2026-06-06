@@ -150,7 +150,199 @@ void RunRestore(VaultStorage& storage) {
     ConsoleUI::ReadLineInput(dummy);
 }
 
-int main() {
+#include <fstream>
+
+// Anahtar okuma ve yazma yardımcı fonksiyonları
+inline bool SaveMasterKey(const std::wstring& filepath, const Sha256Hash& key) {
+    std::ofstream file(WStringToANSI(filepath), std::ios::binary);
+    if (!file.is_open()) return false;
+    file.write(reinterpret_cast<const char*>(key.data()), 32);
+    return file.good();
+}
+
+inline bool LoadMasterKey(const std::wstring& filepath, Sha256Hash& key) {
+    std::ifstream file(WStringToANSI(filepath), std::ios::binary);
+    if (!file.is_open()) return false;
+    file.read(reinterpret_cast<char*>(key.data()), 32);
+    return file.gcount() == 32;
+}
+
+// Servis durumunu takip eden küresel yapılar
+SERVICE_STATUS g_ServiceStatus = {0};
+SERVICE_STATUS_HANDLE g_StatusHandle = nullptr;
+HANDLE g_ServiceStopEvent = INVALID_HANDLE_VALUE;
+
+// Servis modunda kullanılacak küresel depolama ve sunucu işaretçileri
+VaultStorage* g_pStorage = nullptr;
+IpcServer* g_pIpcServer = nullptr;
+
+// Servis kontrol sinyal yakalayıcısı
+void WINAPI ServiceCtrlHandler(DWORD request) {
+    switch (request) {
+        case SERVICE_CONTROL_STOP:
+        case SERVICE_CONTROL_SHUTDOWN:
+            g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+            SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+            SetEvent(g_ServiceStopEvent); // Ana döngüyü uyandır
+            break;
+        default:
+            break;
+    }
+}
+
+// Servis Ana Giriş Noktası
+void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
+    g_StatusHandle = RegisterServiceCtrlHandlerW(L"ILTM_Secure_Service", ServiceCtrlHandler);
+    if (!g_StatusHandle) return;
+
+    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+
+    g_ServiceStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (g_ServiceStopEvent == nullptr) {
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        return;
+    }
+
+    // Yerel diskteki master.key dosyasından anahtarı yükle
+    Sha256Hash masterKey;
+    if (!LoadMasterKey(L"master.key", masterKey)) {
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        return;
+    }
+
+    // Kasayı ilklendir
+    g_pStorage = new VaultStorage(L"vault.bin");
+    if (!g_pStorage->Initialize(masterKey)) {
+        delete g_pStorage;
+        g_pStorage = nullptr;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+        return;
+    }
+
+    // IPC sunucusunu başlat
+    g_pIpcServer = new IpcServer(*g_pStorage);
+    g_pIpcServer->Start();
+
+    // Servis çalışıyor durumuna getirilir
+    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+
+    // Servis durdurulana kadar bekler
+    WaitForSingleObject(g_ServiceStopEvent, INFINITE);
+
+    // Kapatılıyor
+    g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+
+    if (g_pIpcServer) {
+        g_pIpcServer->Stop();
+        delete g_pIpcServer;
+        g_pIpcServer = nullptr;
+    }
+    if (g_pStorage) {
+        delete g_pStorage;
+        g_pStorage = nullptr;
+    }
+
+    CloseHandle(g_ServiceStopEvent);
+
+    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+}
+
+// Servisi sisteme kaydeder
+bool InstallService() {
+    wchar_t path[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return false;
+    std::wstring cmd = L"\"" + std::wstring(path) + L"\" --service";
+
+    SC_HANDLE schSCManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
+    if (!schSCManager) return false;
+
+    SC_HANDLE schService = CreateServiceW(
+        schSCManager,
+        L"ILTM_Secure_Service",
+        L"Immutable Local Time Machine",
+        SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS,
+        SERVICE_AUTO_START,
+        SERVICE_ERROR_NORMAL,
+        cmd.c_str(),
+        nullptr, nullptr, nullptr, nullptr, nullptr
+    );
+
+    if (!schService) {
+        CloseServiceHandle(schSCManager);
+        return false;
+    }
+
+    CloseServiceHandle(schService);
+    CloseServiceHandle(schSCManager);
+    return true;
+}
+
+// Servisi sistemden siler
+bool UninstallService() {
+    SC_HANDLE schSCManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!schSCManager) return false;
+
+    SC_HANDLE schService = OpenServiceW(schSCManager, L"ILTM_Secure_Service", DELETE);
+    if (!schService) {
+        CloseServiceHandle(schSCManager);
+        return false;
+    }
+
+    if (!DeleteService(schService)) {
+        CloseServiceHandle(schService);
+        CloseServiceHandle(schSCManager);
+        return false;
+    }
+
+    CloseServiceHandle(schService);
+    CloseServiceHandle(schSCManager);
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    // Argüman kontrolü
+    if (argc > 1) {
+        std::string arg = argv[1];
+        if (arg == "--install") {
+            if (InstallService()) {
+                std::wcout << L"[+] Servis basariyla kuruldu: ILTM_Secure_Service" << std::endl;
+                return 0;
+            } else {
+                std::wcerr << L"[-] HATA: Servis kurulurken hata olustu. GetLastError: " << GetLastError() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--uninstall") {
+            if (UninstallService()) {
+                std::wcout << L"[+] Servis basariyla silindi." << std::endl;
+                return 0;
+            } else {
+                std::wcerr << L"[-] HATA: Servis silinirken hata olustu. GetLastError: " << GetLastError() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--service") {
+            // SCM aracılığıyla servis olarak çalıştır
+            SERVICE_TABLE_ENTRYW ServiceTable[] = {
+                { const_cast<LPWSTR>(L"ILTM_Secure_Service"), (LPSERVICE_MAIN_FUNCTIONW)ServiceMain },
+                { nullptr, nullptr }
+            };
+            if (StartServiceCtrlDispatcherW(ServiceTable)) {
+                return 0;
+            } else {
+                return GetLastError();
+            }
+        }
+    }
+
     try {
         std::locale::global(std::locale(""));
         std::wcout.imbue(std::locale(""));
@@ -176,6 +368,9 @@ int main() {
         std::wcerr << L"HATA: MasterKey uretilemedi!\n" << std::flush;
         return 1;
     }
+
+    // Servisin arka planda okuyabilmesi için anahtar özetini yerel diske kaydet
+    SaveMasterKey(L"master.key", masterKey);
 
     // Kasamızı "vault.bin" dosyasında saklayacağız
     VaultStorage storage(L"vault.bin");
