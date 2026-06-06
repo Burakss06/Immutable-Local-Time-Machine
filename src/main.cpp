@@ -336,7 +336,8 @@ int main(int argc, char* argv[]) {
                 std::wcout << L"[+] Servis basariyla kuruldu: ILTM_Secure_Service" << std::endl;
                 return 0;
             } else {
-                std::wcerr << L"[-] HATA: Servis kurulurken hata olustu. GetLastError: " << GetLastError() << std::endl;
+                DWORD err = GetLastError();
+                std::wcerr << L"[-] HATA: Servis kurulurken hata olustu. GetLastError: " << err << std::endl;
                 return 1;
             }
         } else if (arg == "--uninstall") {
@@ -344,7 +345,8 @@ int main(int argc, char* argv[]) {
                 std::wcout << L"[+] Servis basariyla silindi." << std::endl;
                 return 0;
             } else {
-                std::wcerr << L"[-] HATA: Servis silinirken hata olustu. GetLastError: " << GetLastError() << std::endl;
+                DWORD err = GetLastError();
+                std::wcerr << L"[-] HATA: Servis silinirken hata olustu. GetLastError: " << err << std::endl;
                 return 1;
             }
         } else if (arg == "--service") {
