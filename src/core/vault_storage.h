@@ -22,8 +22,13 @@ public:
         return m_index.GetFileHistory(filePath);
     }
 
+    const std::wstring& GetVaultPath() const { return m_vaultPath; }
+
     // Bir dosyanın belirli bir sürümünü dışarıya geri yükler (Restore)
     bool RestoreFile(const std::wstring& filePath, size_t versionIndex, const std::wstring& destPath);
+
+    // Bir dosyanın belirli bir sürümünün ham deşifre edilmiş içeriğini belleğe okur
+    bool GetVersionContent(const std::wstring& filePath, size_t versionIndex, std::vector<uint8_t>& outContent);
 
     // RAM'deki indeksi kasanın sonuna yazar ve dosya başlığını günceller
     bool CommitIndex();

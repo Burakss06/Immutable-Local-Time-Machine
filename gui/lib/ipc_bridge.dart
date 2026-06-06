@@ -303,4 +303,127 @@ class IpcBridge {
 
     return sendCommand(4, payload); // CMD_RESTORE = 4
   }
+
+  /// Get status of the backup service
+  ServiceStatusInfo? getStatus() {
+    final header = Uint8List(12);
+    final hBd = ByteData.sublistView(header);
+    hBd.setUint32(0, 0x4950434D, Endian.little);
+    hBd.setUint32(4, 5, Endian.little); // CMD_GET_STATUS = 5
+    hBd.setUint32(8, 0, Endian.little);
+
+    if (!_writeBytes(header)) return null;
+
+    final respHeader = _readBytes(12);
+    if (respHeader == null) return null;
+
+    final rBd = ByteData.sublistView(respHeader);
+    final magic = rBd.getUint32(0, Endian.little);
+    final command = rBd.getUint32(4, Endian.little);
+    final size = rBd.getUint32(8, Endian.little);
+
+    if (magic != 0x4950434D || command != 100 || size < 12) return null;
+
+    final respPayload = _readBytes(size);
+    if (respPayload == null) return null;
+
+    final pBd = ByteData.sublistView(respPayload);
+    final state = pBd.getUint32(0, Endian.little);
+    
+    final watchLen = pBd.getUint32(4, Endian.little);
+    String watchPath = "";
+    if (watchLen > 0) {
+      final watchUnits = List<int>.generate(watchLen, (i) => pBd.getUint16(8 + i * 2, Endian.little));
+      watchPath = String.fromCharCodes(watchUnits);
+    }
+
+    final panicOffset = 8 + watchLen * 2;
+    final panicLen = pBd.getUint32(panicOffset, Endian.little);
+    String panicPath = "";
+    if (panicLen > 0) {
+      final panicUnits = List<int>.generate(panicLen, (i) => pBd.getUint16(panicOffset + 4 + i * 2, Endian.little));
+      panicPath = String.fromCharCodes(panicUnits);
+    }
+
+    return ServiceStatusInfo(state, watchPath, panicPath);
+  }
+
+  /// Set glob filtering rules
+  bool setRules(List<String> rules) {
+    int totalSize = 4;
+    for (final rule in rules) {
+      totalSize += 4 + rule.length * 2;
+    }
+
+    final payload = Uint8List(totalSize);
+    final bd = ByteData.sublistView(payload);
+
+    bd.setUint32(0, rules.length, Endian.little);
+    int offset = 4;
+
+    for (final rule in rules) {
+      final units = rule.codeUnits;
+      bd.setUint32(offset, units.length, Endian.little);
+      offset += 4;
+      for (final unit in units) {
+        bd.setUint16(offset, unit, Endian.little);
+        offset += 2;
+      }
+    }
+
+    return sendCommand(6, payload); // CMD_SET_RULES = 6
+  }
+
+  /// Get version content as raw bytes (for Diff visualization)
+  Uint8List? getVersionContent(int versionIndex, String filePath) {
+    final pathUnits = filePath.codeUnits;
+    final payloadSize = 4 + 4 + pathUnits.length * 2;
+    final payload = Uint8List(payloadSize);
+    final bd = ByteData.sublistView(payload);
+
+    bd.setUint32(0, versionIndex, Endian.little);
+    bd.setUint32(4, pathUnits.length, Endian.little);
+    int offset = 8;
+    for (final unit in pathUnits) {
+      bd.setUint16(offset, unit, Endian.little);
+      offset += 2;
+    }
+
+    // Send request
+    final header = Uint8List(12);
+    final hBd = ByteData.sublistView(header);
+    hBd.setUint32(0, 0x4950434D, Endian.little);
+    hBd.setUint32(4, 7, Endian.little); // CMD_GET_VERSION_CONTENT = 7
+    hBd.setUint32(8, payloadSize, Endian.little);
+
+    if (!_writeBytes(header)) return null;
+    if (!_writeBytes(payload)) return null;
+
+    // Read header response
+    final respHeader = _readBytes(12);
+    if (respHeader == null) return null;
+
+    final rBd = ByteData.sublistView(respHeader);
+    final magic = rBd.getUint32(0, Endian.little);
+    final command = rBd.getUint32(4, Endian.little);
+    final size = rBd.getUint32(8, Endian.little);
+
+    if (magic != 0x4950434D || command != 100) return null;
+    if (size == 0) return null; // Error or empty
+
+    return _readBytes(size);
+  }
+}
+
+class ServiceStatusInfo {
+  final int state; // 0 = Idle, 1 = Watching, 2 = Panic (Ransomware Attack!)
+  final String watchPath;
+  final String panicPath;
+
+  ServiceStatusInfo(this.state, this.watchPath, this.panicPath);
+
+  @override
+  String toString() {
+    return 'ServiceStatusInfo{state: $state, watching: $watchPath, panicFile: $panicPath}';
+  }
 }

@@ -11,10 +11,9 @@ struct BlockInfo {
     uint32_t size;    // Bloğun gerçek byte boyutu
 };
 
-// Büyük bir dosyayı 4 MB'lık bloklara (chunk) böler ve her birinin hash'ini çıkarır
+// Büyük bir dosyayı İçerik Duyarlı Bölümleme (Content-Defined Chunking - CDC) ile dinamik bloklara böler
 inline std::vector<BlockInfo> SliceFile(const std::wstring& filepath, size_t chunkSize = 4 * 1024 * 1024) {
     std::vector<BlockInfo> blocks;
-    // Windows geniş dosya yollarını desteklemek için WStringToANSI kullanılır
     std::string ansiPath = WStringToANSI(filepath);
     std::ifstream file;
     
@@ -26,18 +25,65 @@ inline std::vector<BlockInfo> SliceFile(const std::wstring& filepath, size_t chu
     }
     if (!file.is_open()) return blocks;
 
-    std::vector<uint8_t> buffer(chunkSize);
-    
-    while (file) {
-        file.read(reinterpret_cast<char*>(buffer.data()), chunkSize);
-        std::streamsize bytesRead = file.gcount();
-        if (bytesRead <= 0) break;
+    // CDC Parametreleri: Min 16 KB, Max 256 KB, Hedef ortalama 64 KB
+    const size_t minSize = 16 * 1024;
+    const size_t maxSize = 256 * 1024;
+    const uint32_t mask = 0xFFFF; // Ortalama 64 KB'ta bir eşleşir (2^16)
+    const uint32_t targetVal = 0x7E1D;
 
+    // Polynomial Rolling Hash (Rabin-Karp tarzı) penceresi (W = 48)
+    const uint32_t p = 31;
+    uint32_t p_power = 1;
+    for (int i = 0; i < 48; ++i) {
+        p_power *= p;
+    }
+
+    std::vector<uint8_t> window(48, 0);
+    size_t windowIdx = 0;
+    uint32_t rollingHash = 0;
+
+    std::vector<uint8_t> currentChunk;
+    currentChunk.reserve(maxSize);
+
+    char ch;
+    while (file.get(ch)) {
+        uint8_t byteIn = static_cast<uint8_t>(ch);
+        currentChunk.push_back(byteIn);
+
+        // Pencereden çıkan ve giren byte'lara göre hash güncelleme
+        uint8_t byteOut = window[windowIdx];
+        window[windowIdx] = byteIn;
+        windowIdx = (windowIdx + 1) % 48;
+
+        rollingHash = rollingHash * p + byteIn - byteOut * p_power;
+
+        bool shouldSplit = false;
+        if (currentChunk.size() >= maxSize) {
+            shouldSplit = true;
+        } else if (currentChunk.size() >= minSize) {
+            if ((rollingHash & mask) == targetVal) {
+                shouldSplit = true;
+            }
+        }
+
+        if (shouldSplit) {
+            BlockInfo block;
+            block.size = static_cast<uint32_t>(currentChunk.size());
+            if (CalculateSHA256(currentChunk.data(), currentChunk.size(), block.hash)) {
+                blocks.push_back(block);
+            }
+            currentChunk.clear();
+            rollingHash = 0;
+            window.assign(48, 0);
+            windowIdx = 0;
+        }
+    }
+
+    // Kalan son bloğu paketle
+    if (!currentChunk.empty()) {
         BlockInfo block;
-        block.size = static_cast<uint32_t>(bytesRead);
-        
-        // Bloğun parmak izini hesapla
-        if (CalculateSHA256(buffer.data(), static_cast<size_t>(bytesRead), block.hash)) {
+        block.size = static_cast<uint32_t>(currentChunk.size());
+        if (CalculateSHA256(currentChunk.data(), currentChunk.size(), block.hash)) {
             blocks.push_back(block);
         }
     }

@@ -3,6 +3,10 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <cmath>
+#include <array>
+#include <chrono>
+#include <algorithm>
 
 // Byte modunda parçalı verileri hedef boyuta ulaşana kadar döngüyle okur
 static bool ReadBytes(HANDLE hPipe, void* buffer, DWORD bytesToRead) {
@@ -47,7 +51,7 @@ static bool SendResponseStatus(HANDLE hPipe, uint32_t status) {
 }
 
 IpcServer::IpcServer(VaultStorage& storage) 
-    : m_storage(storage), m_hPipe(INVALID_HANDLE_VALUE), m_running(false) {}
+    : m_storage(storage), m_hPipe(INVALID_HANDLE_VALUE), m_running(false), m_panicState(false) {}
 
 IpcServer::~IpcServer() {
     Stop();
@@ -184,9 +188,56 @@ void IpcServer::HandleClient(HANDLE hPipe) {
             
             m_watchedPath = watchPath;
             m_watcher = std::make_unique<DirectoryWatcher>(m_watchedPath, [this](const std::wstring& filePath, FileEvent event) {
+                if (m_panicState) return;
+
                 if (event == FileEvent::Added || event == FileEvent::Modified) {
+                    // 1. Akıllı Filtreleme Motoru Kontrolü
+                    if (!m_filterEngine.ShouldBackup(filePath)) {
+                        return; // Dışlanan glob kuralı
+                    }
+
+                    // 2. Ransomware Dedektörü: Entropi hesapla
+                    double entropy = CalculateShannonEntropy(filePath);
+
+                    // 3. Hız Eşiği Kontrolü (2 saniyede 10+ yüksek entropili dosya)
+                    uint64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()
+                    ).count();
+
+                    bool triggerPanic = false;
+                    {
+                        std::lock_guard<std::mutex> lock(m_logsMutex);
+                        // 2 saniyeden eski kayıtları temizle
+                        m_writeLogs.erase(std::remove_if(m_writeLogs.begin(), m_writeLogs.end(),
+                            [nowMs](const FileWriteLog& log) { return nowMs - log.timestamp > 2000; }), m_writeLogs.end());
+
+                        m_writeLogs.push_back({nowMs, entropy});
+
+                        int highEntropyCount = 0;
+                        for (const auto& log : m_writeLogs) {
+                            if (log.entropy > 7.6) {
+                                highEntropyCount++;
+                            }
+                        }
+
+                        if (highEntropyCount >= 10) {
+                            triggerPanic = true;
+                        }
+                    }
+
+                    if (triggerPanic) {
+                        m_panicState = true;
+                        m_panicFilePath = filePath;
+                        std::wcerr << L"\n[RANSOMWARE PANIK ALARMI] Saldiri algilandi! Gozcu durduruluyor. Dosya: " << filePath << std::endl;
+                        m_watcher->Stop(); // Korumayı aktif edip gözcüyü kapat
+                        return;
+                    }
+
+                    // 4. Yedekleme & Bulut/Ayna Senkronizasyonu
                     std::lock_guard<std::mutex> innerLock(m_storageMutex);
-                    m_storage.BackupFile(filePath);
+                    if (m_storage.BackupFile(filePath)) {
+                        m_cloudSync.TriggerSync(m_storage.GetVaultPath());
+                    }
                 }
             });
             
@@ -197,14 +248,20 @@ void IpcServer::HandleClient(HANDLE hPipe) {
         }
         
         case CMD_STOP_WATCHER: {
-            std::wcout << L"[IPC] Gozcu durduruluyor..." << std::endl;
+            std::wcout << L"[IPC] Gozcu durduruluyor ve Panik durumu sifirlaniyor..." << std::endl;
             std::lock_guard<std::mutex> lock(m_storageMutex);
             if (m_watcher) {
                 m_watcher->Stop();
                 m_watcher.reset();
                 m_watchedPath.clear();
             }
-            std::wcout << L"[IPC] Gozcu durduruldu." << std::endl;
+            m_panicState = false;
+            m_panicFilePath.clear();
+            {
+                std::lock_guard<std::mutex> logLock(m_logsMutex);
+                m_writeLogs.clear();
+            }
+            std::wcout << L"[IPC] Gozcu durduruldu, durum sifir." << std::endl;
             SendResponseStatus(hPipe, 1);
             break;
         }
@@ -299,10 +356,144 @@ void IpcServer::HandleClient(HANDLE hPipe) {
             SendResponseStatus(hPipe, success ? 1 : 0);
             break;
         }
+
+        case CMD_GET_STATUS: {
+            uint32_t state = m_panicState ? 2 : (m_watcher ? 1 : 0);
+            
+            std::vector<uint8_t> respPayload;
+            respPayload.resize(4);
+            std::memcpy(respPayload.data(), &state, 4);
+
+            // İzlenen Dizin Bilgisi
+            uint32_t watchLen = static_cast<uint32_t>(m_watchedPath.length());
+            size_t offset = respPayload.size();
+            respPayload.resize(offset + 4 + watchLen * sizeof(wchar_t));
+            std::memcpy(respPayload.data() + offset, &watchLen, 4);
+            if (watchLen > 0) {
+                std::memcpy(respPayload.data() + offset + 4, m_watchedPath.data(), watchLen * sizeof(wchar_t));
+            }
+
+            // Ransomware Panik Dizin Bilgisi
+            uint32_t panicLen = static_cast<uint32_t>(m_panicFilePath.length());
+            offset = respPayload.size();
+            respPayload.resize(offset + 4 + panicLen * sizeof(wchar_t));
+            std::memcpy(respPayload.data() + offset, &panicLen, 4);
+            if (panicLen > 0) {
+                std::memcpy(respPayload.data() + offset + 4, m_panicFilePath.data(), panicLen * sizeof(wchar_t));
+            }
+
+            IpcHeader respHeader;
+            respHeader.magic = 0x4950434D;
+            respHeader.command = CMD_RESPONSE;
+            respHeader.payload_size = static_cast<uint32_t>(respPayload.size());
+
+            WriteBytes(hPipe, &respHeader, sizeof(IpcHeader));
+            WriteBytes(hPipe, respPayload.data(), static_cast<DWORD>(respPayload.size()));
+            break;
+        }
+
+        case CMD_SET_RULES: {
+            if (payload.size() < 4) {
+                SendResponseStatus(hPipe, 0);
+                break;
+            }
+            uint32_t ruleCount = 0;
+            std::memcpy(&ruleCount, payload.data(), 4);
+
+            std::vector<std::wstring> rules;
+            size_t offset = 4;
+            bool parseOk = true;
+
+            for (uint32_t i = 0; i < ruleCount; ++i) {
+                if (offset + 4 > payload.size()) { parseOk = false; break; }
+                uint32_t ruleLen = 0;
+                std::memcpy(&ruleLen, payload.data() + offset, 4);
+                offset += 4;
+
+                if (offset + ruleLen * sizeof(wchar_t) > payload.size()) { parseOk = false; break; }
+                std::wstring rule(reinterpret_cast<const wchar_t*>(payload.data() + offset), ruleLen);
+                rules.push_back(rule);
+                offset += ruleLen * sizeof(wchar_t);
+            }
+
+            if (!parseOk) {
+                SendResponseStatus(hPipe, 0);
+                break;
+            }
+
+            m_filterEngine.SetRules(rules);
+            SendResponseStatus(hPipe, 1);
+            break;
+        }
+
+        case CMD_GET_VERSION_CONTENT: {
+            if (payload.size() < 8) {
+                SendResponseStatus(hPipe, 0);
+                break;
+            }
+            uint32_t versionIndex = 0;
+            uint32_t pathLen = 0;
+            std::memcpy(&versionIndex, payload.data(), 4);
+            std::memcpy(&pathLen, payload.data() + 4, 4);
+
+            if (payload.size() < 8 + pathLen * sizeof(wchar_t)) {
+                SendResponseStatus(hPipe, 0);
+                break;
+            }
+
+            std::wstring originPath(reinterpret_cast<const wchar_t*>(payload.data() + 8), pathLen);
+
+            std::vector<uint8_t> versionContent;
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lock(m_storageMutex);
+                ok = m_storage.GetVersionContent(originPath, versionIndex, versionContent);
+            }
+
+            if (!ok) {
+                SendResponseStatus(hPipe, 0);
+                break;
+            }
+
+            IpcHeader respHeader;
+            respHeader.magic = 0x4950434D; // 'IPCM' ASCII
+            respHeader.command = CMD_RESPONSE;
+            respHeader.payload_size = static_cast<uint32_t>(versionContent.size());
+
+            if (WriteBytes(hPipe, &respHeader, sizeof(IpcHeader)) &&
+                WriteBytes(hPipe, versionContent.data(), static_cast<DWORD>(versionContent.size()))) {
+                std::wcout << L"[IPC] Surum icerigi yaniti gonderildi. Boyut: " << versionContent.size() << L" byte." << std::endl;
+            }
+            break;
+        }
         
         default:
             std::wcerr << L"[IPC-HATA] Bilinmeyen Komut ID: " << header.command << std::endl;
             SendResponseStatus(hPipe, 0); // Bilinmeyen Komut
             break;
     }
+}
+
+double IpcServer::CalculateShannonEntropy(const std::wstring& filePath) {
+    std::ifstream file(WStringToANSI(filePath), std::ios::binary);
+    if (!file.is_open()) return 0.0;
+
+    std::vector<uint8_t> buffer(2048);
+    file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+    std::streamsize bytesRead = file.gcount();
+    if (bytesRead <= 0) return 0.0;
+
+    std::array<double, 256> frequencies = {0.0};
+    for (std::streamsize i = 0; i < bytesRead; ++i) {
+        frequencies[buffer[i]]++;
+    }
+
+    double entropy = 0.0;
+    for (double freq : frequencies) {
+        if (freq > 0.0) {
+            double p = freq / bytesRead;
+            entropy -= p * (std::log2(p));
+        }
+    }
+    return entropy;
 }

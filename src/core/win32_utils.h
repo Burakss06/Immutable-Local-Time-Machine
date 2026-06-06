@@ -13,6 +13,16 @@ inline std::string WStringToANSI(const std::wstring& wstr) {
     return strTo;
 }
 
+// ANSI stringi wstring (Unicode) formatına çevirir.
+inline std::wstring ANSIToWString(const std::string& str) {
+    if (str.empty()) return L"";
+    int size_needed = MultiByteToWideChar(CP_ACP, 0, str.c_str(), -1, nullptr, 0);
+    if (size_needed <= 0) return L"";
+    std::wstring wstrTo(size_needed - 1, 0);
+    MultiByteToWideChar(CP_ACP, 0, str.c_str(), -1, &wstrTo[0], size_needed);
+    return wstrTo;
+}
+
 // Dosyanın var olup olmadığını Win32 API ile kontrol eder
 inline bool Win32FileExists(const std::wstring& path) {
     DWORD dwAttrib = GetFileAttributesW(path.c_str());

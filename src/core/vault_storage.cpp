@@ -288,3 +288,35 @@ bool VaultStorage::RestoreFile(const std::wstring& filePath, size_t versionIndex
     }
     return destFile.good();
 }
+
+bool VaultStorage::GetVersionContent(const std::wstring& filePath, size_t versionIndex, std::vector<uint8_t>& outContent) {
+    const auto* history = m_index.GetFileHistory(filePath);
+    if (!history || versionIndex >= history->size()) return false;
+
+    const auto& version = (*history)[versionIndex];
+
+    std::ifstream vault(WStringToANSI(m_vaultPath), std::ios::binary);
+    if (!vault) return false;
+
+    outContent.clear();
+
+    for (const auto& hash : version.blockHashes) {
+        uint64_t offset = 0;
+        if (!m_index.GetChunkOffset(hash, offset)) return false;
+
+        vault.seekg(offset);
+        ChunkHeader chunkHeader;
+        vault.read(reinterpret_cast<char*>(&chunkHeader), sizeof(ChunkHeader));
+        if (static_cast<size_t>(vault.gcount()) != sizeof(ChunkHeader)) return false;
+
+        std::vector<uint8_t> ciphertext(chunkHeader.data_size);
+        vault.read(reinterpret_cast<char*>(ciphertext.data()), chunkHeader.data_size);
+        if (static_cast<size_t>(vault.gcount()) != chunkHeader.data_size) return false;
+
+        std::vector<uint8_t> plaintext;
+        if (!DecryptBlockAES(ciphertext.data(), chunkHeader.data_size, hash, m_masterKey, plaintext)) return false;
+
+        outContent.insert(outContent.end(), plaintext.begin(), plaintext.end());
+    }
+    return true;
+}
