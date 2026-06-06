@@ -1,0 +1,15 @@
+name: iltm_gui
+description: Immutable Local Time Machine - GUI Dashboard Client
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

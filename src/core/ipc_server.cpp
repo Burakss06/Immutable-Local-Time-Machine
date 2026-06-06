@@ -86,13 +86,23 @@ void IpcServer::Stop() {
 
 void IpcServer::ListenLoop() {
     while (m_running) {
+        // Tüm kullanıcılara (GUI vb.) erişim izni vermek için Null DACL hazırlıyoruz
+        SECURITY_DESCRIPTOR sd;
+        InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+        SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE);
+        
+        SECURITY_ATTRIBUTES sa;
+        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+        sa.lpSecurityDescriptor = &sd;
+        sa.bInheritHandle = FALSE;
+
         // PIPE_TYPE_BYTE | PIPE_READMODE_BYTE ile ham byte-stream modunda boru açıyoruz
         m_hPipe = CreateNamedPipeW(
             L"\\\\.\\pipe\\ILTM_Secure_Pipe",
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             1, // Eşzamanlı 1 bağlantı (GUI Kontrolü)
-            4096, 4096, 0, nullptr
+            4096, 4096, 0, &sa
         );
         
         if (m_hPipe == INVALID_HANDLE_VALUE) {
@@ -111,6 +121,8 @@ void IpcServer::ListenLoop() {
         
         if (connected) {
             HandleClient(m_hPipe);
+            // İstemci tüm verileri okuyana kadar bağlantıyı kapatma (Buffer'ları boşalt)
+            FlushFileBuffers(m_hPipe);
         }
         
         DisconnectNamedPipe(m_hPipe);
