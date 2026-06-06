@@ -35,18 +35,6 @@ graph TD
 
 ---
 
-## 🖼️ Ekran Görüntüleri (Screenshots)
-
-*Aşağıda, neon yeşili temalı Flutter Masaüstü kontrol panelimizin görsel fark analiz (Diff Viewer) ve canlı panik durumu izleme ekranları yer almaktadır.*
-
-<p align="center">
-  <img src="docs/screenshots/dashboard_preview.png" alt="ILTM GUI Dashboard Preview" width="800" />
-  <br>
-  <em>Görsel 1: Canlı Durum Takibi, Glob Kuralları Tanımlama ve Zaman Tüneli Fark Analiz Ekranı (Placeholder)</em>
-</p>
-
----
-
 ## 🚀 Öne Çıkan Özellikler (Key Features)
 
 ### 1. İçerik Duyarlı Bölümleme ve Tekilleştirme (CDC & Deduplication)
