@@ -1,0 +1,19 @@
+# Compiled executables
+iltm.exe
+
+# Database vaults & Temp files
+vault.bin
+.iltm_wake
+
+# C++ Object files & Build folders
+*.o
+*.obj
+*.pdb
+*.ilk
+.vs/
+out/
+build/
+bin/
+
+# Temporary scratch directories
+scratch/
