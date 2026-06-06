@@ -74,8 +74,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _tryConnect() {
+    print('[GUI-DEBUG] _tryConnect called. Invoking _bridge.connect()...');
     setState(() {
       _connected = _bridge.connect();
+      print('[GUI-DEBUG] _bridge.connect() returned: $_connected');
       if (_connected) {
         _statusMessage = 'Servis Bağlantısı Aktif.';
         _statusTimer?.cancel();
@@ -90,8 +92,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   void _checkStatus() {
+    print('[GUI-DEBUG] _checkStatus polling... Invoking _bridge.getStatus()...');
     final info = _bridge.getStatus();
     if (info == null) {
+      print('[GUI-DEBUG] _bridge.getStatus() returned NULL! Connection dropping.');
       setState(() {
         _connected = false;
         _statusMessage = 'Servis bağlantısı koptu.';
@@ -100,6 +104,7 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
+    print('[GUI-DEBUG] _bridge.getStatus() returned: state=${info.state}, watchPath=${info.watchPath}, panicPath=${info.panicPath}');
     setState(() {
       _connected = true;
       _isWatching = info.state == 1;

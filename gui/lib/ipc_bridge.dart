@@ -58,6 +58,9 @@ typedef ReadFile_Dart = int Function(
   Pointer overlapped,
 );
 
+typedef GetLastError_Native = Uint32 Function();
+typedef GetLastError_Dart = int Function();
+
 class FileVersion {
   final DateTime timestamp;
   final int blockCount;
@@ -82,6 +85,7 @@ class IpcBridge {
   late final CloseHandle_Dart _closeHandle;
   late final WriteFile_Dart _writeFile;
   late final ReadFile_Dart _readFile;
+  late final GetLastError_Dart _getLastError;
 
   Pointer _hPipe = Pointer.fromAddress(0);
 
@@ -91,6 +95,7 @@ class IpcBridge {
     _closeHandle = kernel32.lookupFunction<CloseHandle_Native, CloseHandle_Dart>('CloseHandle');
     _writeFile = kernel32.lookupFunction<WriteFile_Native, WriteFile_Dart>('WriteFile');
     _readFile = kernel32.lookupFunction<ReadFile_Native, ReadFile_Dart>('ReadFile');
+    _getLastError = kernel32.lookupFunction<GetLastError_Native, GetLastError_Dart>('GetLastError');
   }
 
   bool get isConnected => _hPipe.address != 0 && _hPipe.address != -1 && _hPipe.address != 0xFFFFFFFFFFFFFFFF;
@@ -99,6 +104,7 @@ class IpcBridge {
     if (isConnected) return true;
 
     final pPath = pipePath.toNativeUtf16();
+    print('[FFI-DEBUG] Creating pipe connection to: $pipePath');
     _hPipe = _createFile(
       pPath,
       genericRead | genericWrite,
@@ -110,7 +116,14 @@ class IpcBridge {
     );
     calloc.free(pPath);
 
-    return isConnected;
+    final ok = isConnected;
+    if (!ok) {
+      final err = _getLastError();
+      print('[FFI-DEBUG] CreateFileW failed! Handle Address: ${_hPipe.address}, GetLastError: $err');
+    } else {
+      print('[FFI-DEBUG] CreateFileW success! Handle Address: ${_hPipe.address}');
+    }
+    return ok;
   }
 
   void disconnect() {
