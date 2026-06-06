@@ -114,11 +114,11 @@ class IpcBridge {
       0,
       nullptr,
     );
+    final err = _getLastError();
     calloc.free(pPath);
 
     final ok = isConnected;
     if (!ok) {
-      final err = _getLastError();
       print('[FFI-DEBUG] CreateFileW failed! Handle Address: ${_hPipe.address}, GetLastError: $err');
     } else {
       print('[FFI-DEBUG] CreateFileW success! Handle Address: ${_hPipe.address}');
@@ -141,8 +141,12 @@ class IpcBridge {
 
     final pWritten = calloc<Uint32>();
     final ok = _writeFile(_hPipe, pBuffer, bytes.length, pWritten, nullptr);
+    final err = _getLastError();
 
     final success = ok != 0 && pWritten.value == bytes.length;
+    if (!success) {
+      print('[FFI-DEBUG] WriteFile failed! ok: $ok, written: ${pWritten.value}/${bytes.length}, GetLastError: $err');
+    }
     calloc.free(pBuffer);
     calloc.free(pWritten);
     return success;
@@ -163,8 +167,10 @@ class IpcBridge {
         pRead,
         nullptr,
       );
+      final err = _getLastError();
 
       if (ok == 0 || pRead.value == 0) {
+        print('[FFI-DEBUG] ReadFile failed! ok: $ok, read: ${pRead.value}, GetLastError: $err');
         calloc.free(pBuffer);
         calloc.free(pRead);
         return null;
