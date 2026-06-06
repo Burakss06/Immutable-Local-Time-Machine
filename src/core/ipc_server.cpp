@@ -68,6 +68,13 @@ void IpcServer::Stop() {
     if (!m_running) return;
     m_running = false;
     
+    // Aktif pipe handle'ını kapatarak engellenen ReadFile/ConnectNamedPipe çağrılarını çözüyoruz
+    HANDLE hTemp = m_hPipe;
+    m_hPipe = INVALID_HANDLE_VALUE;
+    if (hTemp != INVALID_HANDLE_VALUE) {
+        CloseHandle(hTemp);
+    }
+    
     // ConnectNamedPipe bloklamasını çözmek için sahte (dummy) bağlantı kuruyoruz
     HANDLE hWake = CreateFileW(
         L"\\\\.\\pipe\\ILTM_Secure_Pipe", 
