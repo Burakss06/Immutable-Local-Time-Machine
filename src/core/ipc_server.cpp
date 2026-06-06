@@ -387,6 +387,11 @@ void IpcServer::HandleClient(HANDLE hPipe) {
             respHeader.command = CMD_RESPONSE;
             respHeader.payload_size = static_cast<uint32_t>(respPayload.size());
 
+            std::wcout << L"[IPC-DEBUG] CMD_GET_STATUS -> state: " << state 
+                      << L", watchLen: " << watchLen 
+                      << L", panicLen: " << panicLen 
+                      << L", payloadSize: " << respPayload.size() << std::endl;
+
             WriteBytes(hPipe, &respHeader, sizeof(IpcHeader));
             WriteBytes(hPipe, respPayload.data(), static_cast<DWORD>(respPayload.size()));
             break;

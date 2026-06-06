@@ -325,37 +325,76 @@ class IpcBridge {
     hBd.setUint32(4, 5, Endian.little); // CMD_GET_STATUS = 5
     hBd.setUint32(8, 0, Endian.little);
 
-    if (!_writeBytes(header)) return null;
+    print('[FFI-DEBUG] getStatus: Writing 12-byte header...');
+    if (!_writeBytes(header)) {
+      print('[FFI-DEBUG] getStatus: Failed to write header!');
+      return null;
+    }
 
+    print('[FFI-DEBUG] getStatus: Reading 12-byte response header...');
     final respHeader = _readBytes(12);
-    if (respHeader == null) return null;
+    if (respHeader == null) {
+      print('[FFI-DEBUG] getStatus: Failed to read 12-byte response header!');
+      return null;
+    }
 
     final rBd = ByteData.sublistView(respHeader);
     final magic = rBd.getUint32(0, Endian.little);
     final command = rBd.getUint32(4, Endian.little);
     final size = rBd.getUint32(8, Endian.little);
+    print('[FFI-DEBUG] getStatus: Header OK -> magic: 0x${magic.toRadixString(16)}, command: $command, payloadSize: $size');
 
-    if (magic != 0x4950434D || command != 100 || size < 12) return null;
+    if (magic != 0x4950434D) {
+      print('[FFI-DEBUG] getStatus: Magic mismatch! Expected 0x4950434D, got 0x${magic.toRadixString(16)}');
+      return null;
+    }
+    if (command != 100) {
+      print('[FFI-DEBUG] getStatus: Command mismatch! Expected 100 (Response), got $command');
+      return null;
+    }
+    if (size < 12) {
+      print('[FFI-DEBUG] getStatus: Payload size too small! Expected >= 12, got $size');
+      return null;
+    }
 
+    print('[FFI-DEBUG] getStatus: Reading $size bytes of payload...');
     final respPayload = _readBytes(size);
-    if (respPayload == null) return null;
+    if (respPayload == null) {
+      print('[FFI-DEBUG] getStatus: Failed to read $size bytes of payload!');
+      return null;
+    }
 
     final pBd = ByteData.sublistView(respPayload);
     final state = pBd.getUint32(0, Endian.little);
-    
     final watchLen = pBd.getUint32(4, Endian.little);
+    
+    print('[FFI-DEBUG] getStatus: Parsed state: $state, watchLen: $watchLen');
+    
     String watchPath = "";
     if (watchLen > 0) {
       final watchUnits = List<int>.generate(watchLen, (i) => pBd.getUint16(8 + i * 2, Endian.little));
       watchPath = String.fromCharCodes(watchUnits);
+      print('[FFI-DEBUG] getStatus: Parsed watchPath: $watchPath');
     }
 
     final panicOffset = 8 + watchLen * 2;
+    if (panicOffset + 4 > size) {
+      print('[FFI-DEBUG] getStatus: Panic offset out of bounds! Offset: $panicOffset, size: $size');
+      return null;
+    }
+
     final panicLen = pBd.getUint32(panicOffset, Endian.little);
+    print('[FFI-DEBUG] getStatus: Parsed panicLen: $panicLen');
+
     String panicPath = "";
     if (panicLen > 0) {
+      if (panicOffset + 4 + panicLen * 2 > size) {
+        print('[FFI-DEBUG] getStatus: Panic path out of bounds!');
+        return null;
+      }
       final panicUnits = List<int>.generate(panicLen, (i) => pBd.getUint16(panicOffset + 4 + i * 2, Endian.little));
       panicPath = String.fromCharCodes(panicUnits);
+      print('[FFI-DEBUG] getStatus: Parsed panicPath: $panicPath');
     }
 
     return ServiceStatusInfo(state, watchPath, panicPath);
