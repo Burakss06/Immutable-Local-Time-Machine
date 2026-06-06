@@ -200,6 +200,18 @@ void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
     g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
 
+    // SCM tarafından başlatıldığında CWD C:\Windows\System32 olur.
+    // Relatif yolların (master.key, vault.bin) doğru çalışması için CWD'yi exe dizinine çekiyoruz.
+    wchar_t exePath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+        std::wstring wsPath(exePath);
+        size_t pos = wsPath.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) {
+            std::wstring dir = wsPath.substr(0, pos);
+            SetCurrentDirectoryW(dir.c_str());
+        }
+    }
+
     g_ServiceStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (g_ServiceStopEvent == nullptr) {
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
