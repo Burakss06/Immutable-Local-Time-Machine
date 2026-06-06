@@ -12,10 +12,15 @@ public:
     ~VaultStorage();
 
     // Kasayı açar, başlığı okur ve indeksi yükler
-    bool Initialize();
+    bool Initialize(const Sha256Hash& masterKey);
 
     // Bir dosyayı dilimleyip tekilleştirerek kasaya yedekler
     bool BackupFile(const std::wstring& filePath);
+
+    // Bir dosyanın sürüm geçmişini döner
+    const std::vector<FileVersion>* GetFileHistory(const std::wstring& filePath) const {
+        return m_index.GetFileHistory(filePath);
+    }
 
     // Bir dosyanın belirli bir sürümünü dışarıya geri yükler (Restore)
     bool RestoreFile(const std::wstring& filePath, size_t versionIndex, const std::wstring& destPath);
@@ -27,6 +32,7 @@ private:
     std::wstring m_vaultPath;
     VaultHeader m_header;
     VaultIndex m_index;
+    Sha256Hash m_masterKey; // Blok şifrelemesinde kullanılacak anahtar
     
     // Yardımcı fonksiyonlar: İndeksi serileştirme / deserileştirme
     bool WriteIndexToStream(std::ofstream& out);

@@ -2,6 +2,7 @@
 #include <chrono>
 #include <iostream>
 #include "win32_utils.h"
+#include "crypto_aes.h"
 
 VaultStorage::VaultStorage(const std::wstring& vaultFilePath)
     : m_vaultPath(vaultFilePath) {
@@ -12,7 +13,8 @@ VaultStorage::~VaultStorage() {
     CommitIndex();
 }
 
-bool VaultStorage::Initialize() {
+bool VaultStorage::Initialize(const Sha256Hash& masterKey) {
+    m_masterKey = masterKey;
     // Kasa dosyası varsa oku ve doğrula, yoksa yeni oluştur
     if (Win32FileExists(m_vaultPath)) {
         if (!LoadAndValidateHeader(m_vaultPath, m_header)) {
@@ -37,47 +39,86 @@ bool VaultStorage::BackupFile(const std::wstring& filePath) {
     std::vector<BlockInfo> blocks = SliceFile(filePath);
     if (blocks.empty()) return false;
 
-    // Kasa dosyasını okuma-yazma modunda aç
-    std::fstream vault(WStringToANSI(m_vaultPath), std::ios::in | std::ios::out | std::ios::binary);
-    if (!vault) return false;
-
     std::vector<Sha256Hash> fileBlockHashes;
-    
     for (const auto& block : blocks) {
-        uint64_t chunkOffset = 0;
         fileBlockHashes.push_back(block.hash);
-        
-        // Bu blok kasada zaten var mı? (Tekilleştirme kontrolü)
-        if (m_index.GetChunkOffset(block.hash, chunkOffset)) {
-            continue; // Varsa yazma, referansı kullan
-        }
-
-        // Yoksa: Bloğu kasaya ekle (Eski indeks tablosunun üzerine yazarız)
-        vault.seekp(m_header.index_offset);
-        chunkOffset = m_header.index_offset;
-
-        // ChunkHeader yaz
-        ChunkHeader chunkHeader;
-        std::memcpy(chunkHeader.hash, block.hash.data(), 32);
-        chunkHeader.data_size = block.size;
-        vault.write(reinterpret_cast<const char*>(&chunkHeader), sizeof(ChunkHeader));
-
-        // Gerçek veri bloğunu oku ve kasaya yaz
-        std::ifstream srcFile(WStringToANSI(filePath), std::ios::binary);
-        if (!srcFile) return false;
-        srcFile.seekg(fileBlockHashes.size() == 1 ? 0 : (fileBlockHashes.size() - 1) * 4 * 1024 * 1024);
-        
-        std::vector<uint8_t> buffer(block.size);
-        srcFile.read(reinterpret_cast<char*>(buffer.data()), block.size);
-        vault.write(reinterpret_cast<const char*>(buffer.data()), block.size);
-
-        // İndeksi güncelle
-        m_index.RegisterChunk(block.hash, chunkOffset);
-        m_header.total_chunks++;
-
-        // Bir sonraki bloğun yazılacağı yeri güncelle (index_offset'i kaydırıyoruz)
-        m_header.index_offset = vault.tellp();
     }
+
+    // Gelişmiş Tekrarlı Sürüm Filtresi (Duplicate Version Filter)
+    const auto* history = m_index.GetFileHistory(filePath);
+    if (history && !history->empty()) {
+        const auto& lastVersion = history->back();
+        if (lastVersion.blockHashes == fileBlockHashes) {
+            // Son yedekle birebir aynı sürüm, boşuna ekleme yapma!
+            return true;
+        }
+    }
+
+    bool writeSuccess = true;
+    
+    // Kasa dosyasını okuma-yazma modunda aç (Skop içinde açıyoruz ki CommitIndex öncesi kapansın)
+    {
+        std::fstream vault(WStringToANSI(m_vaultPath), std::ios::in | std::ios::out | std::ios::binary);
+        if (!vault) return false;
+
+        uint64_t currentOffset = 0;
+        
+        for (const auto& block : blocks) {
+            uint64_t chunkOffset = 0;
+            
+            // Bu blok kasada zaten var mı? (Tekilleştirme kontrolü)
+            if (m_index.GetChunkOffset(block.hash, chunkOffset)) {
+                currentOffset += block.size;
+                continue; // Varsa yazma, referansı kullan
+            }
+
+            // Yoksa: Bloğu kasaya ekle (Eski indeks tablosunun üzerine yazarız)
+            vault.seekp(m_header.index_offset);
+            chunkOffset = m_header.index_offset;
+
+            // Gerçek veri bloğunu oku ve şifrele
+            std::ifstream srcFile(WStringToANSI(filePath), std::ios::binary);
+            if (!srcFile) {
+                writeSuccess = false;
+                break;
+            }
+            srcFile.seekg(currentOffset);
+            
+            std::vector<uint8_t> buffer(block.size);
+            srcFile.read(reinterpret_cast<char*>(buffer.data()), block.size);
+            if (static_cast<uint32_t>(srcFile.gcount()) != block.size) {
+                writeSuccess = false;
+                break;
+            }
+            
+            // Bloğu AES-256 ile şifrele (Katılımsal Şifreleme)
+            std::vector<uint8_t> ciphertext;
+            if (!EncryptBlockAES(buffer.data(), block.size, block.hash, m_masterKey, ciphertext)) {
+                writeSuccess = false;
+                break;
+            }
+
+            // ChunkHeader yaz (şifrelenmiş boyut yazılır!)
+            ChunkHeader chunkHeader;
+            std::memcpy(chunkHeader.hash, block.hash.data(), 32);
+            chunkHeader.data_size = static_cast<uint32_t>(ciphertext.size());
+            vault.write(reinterpret_cast<const char*>(&chunkHeader), sizeof(ChunkHeader));
+
+            // Şifrelenmiş veriyi kasaya yaz
+            vault.write(reinterpret_cast<const char*>(ciphertext.data()), ciphertext.size());
+
+            // İndeksi güncelle
+            m_index.RegisterChunk(block.hash, chunkOffset);
+            m_header.total_chunks++;
+
+            // Bir sonraki bloğun yazılacağı yeri güncelle (index_offset'i kaydırıyoruz)
+            m_header.index_offset = vault.tellp();
+            
+            currentOffset += block.size;
+        }
+    }
+
+    if (!writeSuccess) return false;
 
     // Dosya için yeni bir sürüm kaydı oluştur
     FileVersion version;
@@ -212,13 +253,25 @@ bool VaultStorage::RestoreFile(const std::wstring& filePath, size_t versionIndex
         vault.seekg(offset);
         ChunkHeader chunkHeader;
         vault.read(reinterpret_cast<char*>(&chunkHeader), sizeof(ChunkHeader));
+        if (static_cast<size_t>(vault.gcount()) != sizeof(ChunkHeader)) {
+            return false;
+        }
 
-        // Gerçek blok verisini oku
-        std::vector<uint8_t> buffer(chunkHeader.data_size);
-        vault.read(reinterpret_cast<char*>(buffer.data()), chunkHeader.data_size);
+        // Şifrelenmiş blok verisini oku
+        std::vector<uint8_t> ciphertext(chunkHeader.data_size);
+        vault.read(reinterpret_cast<char*>(ciphertext.data()), chunkHeader.data_size);
+        if (static_cast<size_t>(vault.gcount()) != chunkHeader.data_size) {
+            return false;
+        }
+
+        // Bloğu AES-256 ile deşifre et
+        std::vector<uint8_t> plaintext;
+        if (!DecryptBlockAES(ciphertext.data(), chunkHeader.data_size, hash, m_masterKey, plaintext)) {
+            return false;
+        }
 
         // Geri yüklenen dosyaya yaz
-        destFile.write(reinterpret_cast<const char*>(buffer.data()), chunkHeader.data_size);
+        destFile.write(reinterpret_cast<const char*>(plaintext.data()), plaintext.size());
     }
     return destFile.good();
 }

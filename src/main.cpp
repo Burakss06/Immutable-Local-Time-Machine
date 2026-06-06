@@ -2,6 +2,8 @@
 #include "core/watcher.h"
 #include "core/vault_storage.h"
 #include "core/win32_utils.h"
+#include "core/crypto.h"
+#include "core/ipc_server.h"
 #include <iostream>
 #include <memory>
 #include <locale>
@@ -10,14 +12,16 @@ void RunWatcher(VaultStorage& storage) {
     ConsoleUI::ClearScreen();
     ConsoleUI::DrawHeader();
 
-    std::wcout << L"Izlenecek dizinin tam yolunu girin:\n> " << std::flush;
+    std::wcout << L"Izlenecek dizinin tam yolunu girin (Iptal icin ESC):\n> " << std::flush;
     std::wstring watchPath;
-    std::getline(std::wcin, watchPath);
+    if (!ConsoleUI::ReadLineInput(watchPath)) {
+        return; // ESC ile çıkış
+    }
 
     if (watchPath.empty() || !Win32DirectoryExists(watchPath)) {
         std::wcout << L"Gecersiz dizin yolu! Devam etmek icin Enter'a basin...\n" << std::flush;
         std::wstring dummy;
-        std::getline(std::wcin, dummy);
+        ConsoleUI::ReadLineInput(dummy);
         return;
     }
 
@@ -40,7 +44,7 @@ void RunWatcher(VaultStorage& storage) {
     if (!watcher.Start()) {
         std::wcout << L"[-] Gozcu baslatilamadi! Devam etmek icin Enter...\n" << std::flush;
         std::wstring dummy;
-        std::getline(std::wcin, dummy);
+        ConsoleUI::ReadLineInput(dummy);
         return;
     }
 
@@ -58,30 +62,92 @@ void RunWatcher(VaultStorage& storage) {
     watcher.Stop();
 }
 
+#include <ctime>
+
+// Zaman damgasını insan tarafından okunabilir tarihe çevirir
+inline std::wstring FormatTimestamp(uint64_t ms) {
+    time_t secs = static_cast<time_t>(ms / 1000);
+    std::tm* t = std::localtime(&secs);
+    if (!t) return L"Bilinmeyen Zaman";
+    wchar_t buf[64];
+    wcsftime(buf, 64, L"%d.%m.%Y %H:%M:%S", t);
+    return std::wstring(buf);
+}
+
 void RunRestore(VaultStorage& storage) {
     ConsoleUI::ClearScreen();
     ConsoleUI::DrawHeader();
 
-    std::wcout << L"Geri yuklemek istediginiz dosyanin orijinal tam yolunu girin:\n> " << std::flush;
+    std::wcout << L"Geri yuklemek istediginiz dosyanin orijinal tam yolunu girin (Iptal icin ESC):\n> " << std::flush;
     std::wstring originPath;
-    std::getline(std::wcin, originPath);
+    if (!ConsoleUI::ReadLineInput(originPath)) {
+        return; // ESC ile çıkış
+    }
 
-    std::wcout << L"Geri yuklenecek yeni dosya yolunu girin (Orn: C:\\restored.txt):\n> " << std::flush;
+    // Dosyanın kasa içindeki geçmiş sürümlerini sorgula
+    const auto* history = storage.GetFileHistory(originPath);
+    if (!history || history->empty()) {
+        std::wcout << L"\n\x1B[31m[-] HATA: Bu dosya icin kayitli hicbir surum bulunamadi!\x1B[0m\n";
+        std::wcout << L"\nDevam etmek icin Enter'a basin..." << std::flush;
+        std::wstring dummy;
+        ConsoleUI::ReadLineInput(dummy);
+        return;
+    }
+
+    int selectedVersion = 0;
+    int versionCount = static_cast<int>(history->size());
+
+    // Sürüm Seçim Menüsü Döngüsü
+    while (true) {
+        ConsoleUI::ClearScreen();
+        ConsoleUI::DrawHeader();
+        std::wcout << L"\x1B[33mSURUM GECMISI MENUSU\x1B[0m\n";
+        std::wcout << L"Dosya: " << originPath << L"\n\n";
+
+        for (int i = 0; i < versionCount; ++i) {
+            const auto& ver = (*history)[i];
+            std::wstring timeStr = FormatTimestamp(ver.timestamp);
+            if (i == selectedVersion) {
+                std::wcout << L" \x1B[36m-> [" << i + 1 << L"] Surum: " << timeStr 
+                           << L" (" << ver.blockHashes.size() << L" Blok)\x1B[0m\n";
+            } else {
+                std::wcout << L"    [" << i + 1 << L"] Surum: " << timeStr 
+                           << L" (" << ver.blockHashes.size() << L" Blok)\n";
+            }
+        }
+        std::wcout << L"\n\x1B[90m(Yon tuslariyla secin, Enter ile geri yukleyin, ESC ile iptal edin)\x1B[0m\n" << std::flush;
+
+        int key = ConsoleUI::ReadMenuInput();
+        if (key == 1) { // Yukarı
+            selectedVersion = (selectedVersion == 0) ? versionCount - 1 : selectedVersion - 1;
+        } else if (key == 2) { // Aşağı
+            selectedVersion = (selectedVersion == versionCount - 1) ? 0 : selectedVersion + 1;
+        } else if (key == 3) { // Enter
+            break;
+        } else if (key == 4) { // ESC
+            return;
+        }
+    }
+
+    ConsoleUI::ClearScreen();
+    ConsoleUI::DrawHeader();
+    std::wcout << L"Geri yuklenecek yeni dosya yolunu girin (Orn: C:\\restored.txt, Iptal icin ESC):\n> " << std::flush;
     std::wstring destPath;
-    std::getline(std::wcin, destPath);
+    if (!ConsoleUI::ReadLineInput(destPath)) {
+        return; // ESC ile çıkış
+    }
 
     std::wcout << L"\n[~] Geri yukleme (Restore) islemi baslatiliyor...\n" << std::flush;
     
-    // Test amacıyla her zaman en son sürümü (Index 0 veya geçmişteki ilk sürümü) çekeceğiz
-    if (storage.RestoreFile(originPath, 0, destPath)) {
+    if (storage.RestoreFile(originPath, selectedVersion, destPath)) {
         std::wcout << L"\x1B[32m[+] Dosya basariyla kasadan cikartildi ve olusturuldu!\x1B[0m\n" << std::flush;
     } else {
-        std::wcout << L"\x1B[31m[-] HATA: Dosya kasada bulunamadi veya geri yukleme basarisiz.\x1B[0m\n" << std::flush;
+        std::wcout << L"\x1B[31m[-] HATA: Geri yukleme basarisiz.\x1B[0m\n" << std::flush;
     }
 
     std::wcout << L"\nDevam etmek icin Enter'a basin..." << std::flush;
     std::wstring dummy;
-    std::getline(std::wcin, dummy);
+    ConsoleUI::ReadLineInput(dummy);
 }
 
 int main() {
@@ -95,12 +161,32 @@ int main() {
         std::wcerr << L"HATA: ANSI Konsol modu aktif edilemedi!\n" << std::flush;
     }
 
+    ConsoleUI::ClearScreen();
+    ConsoleUI::DrawHeader();
+
+    std::wcout << L"Lutfen Kasa Sifresini Girin:\n> " << std::flush;
+    std::wstring password = ConsoleUI::ReadPassword();
+    if (password.empty()) {
+        std::wcerr << L"HATA: Sifre bos olamaz!\n" << std::flush;
+        return 1;
+    }
+
+    Sha256Hash masterKey;
+    if (!CalculateSHA256(reinterpret_cast<const uint8_t*>(password.data()), password.size() * sizeof(wchar_t), masterKey)) {
+        std::wcerr << L"HATA: MasterKey uretilemedi!\n" << std::flush;
+        return 1;
+    }
+
     // Kasamızı "vault.bin" dosyasında saklayacağız
     VaultStorage storage(L"vault.bin");
-    if (!storage.Initialize()) {
+    if (!storage.Initialize(masterKey)) {
         std::wcerr << L"HATA: Kasa dosya sistemi ilklendirilemedi!\n" << std::flush;
         return 1;
     }
+
+    // Asenkron IPC sunucusunu arka planda ateşle
+    IpcServer ipcServer(storage);
+    ipcServer.Start();
 
     int selectedItem = 1;
     while (true) {
@@ -130,6 +216,8 @@ int main() {
             break;
         }
     }
+
+    ipcServer.Stop(); // IPC sunucusunu kapat ve temiz kapatma yap
 
     ConsoleUI::ClearScreen();
     std::wcout << L"[+] Zaman Makinesi kapatiliyor. Shifu iyi gunler diler!\n" << std::flush;

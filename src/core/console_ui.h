@@ -39,4 +39,11 @@ public:
 
     // Konsol giriş kuyruğundan basılan tuşu okur
     static int ReadMenuInput();
+
+    // Kullanıcıdan maskeli şifre (password) alır
+    static std::wstring ReadPassword();
+
+    // Kullanıcıdan konsol satırı okur. ESC basılırsa false döner (iptal), Enter basılırsa true döner.
+    static bool ReadLineInput(std::wstring& out_str);
 };
+
