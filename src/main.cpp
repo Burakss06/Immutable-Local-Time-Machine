@@ -290,7 +290,9 @@ bool InstallService() {
     );
 
     if (!schService) {
+        DWORD err = GetLastError();
         CloseServiceHandle(schSCManager);
+        SetLastError(err);
         return false;
     }
 
@@ -306,13 +308,17 @@ bool UninstallService() {
 
     SC_HANDLE schService = OpenServiceW(schSCManager, L"ILTM_Secure_Service", DELETE);
     if (!schService) {
+        DWORD err = GetLastError();
         CloseServiceHandle(schSCManager);
+        SetLastError(err);
         return false;
     }
 
     if (!DeleteService(schService)) {
+        DWORD err = GetLastError();
         CloseServiceHandle(schService);
         CloseServiceHandle(schSCManager);
+        SetLastError(err);
         return false;
     }
 
